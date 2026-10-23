@@ -167,6 +167,17 @@ class SensorManager:
             if to_add:
                 self.async_add_entities(to_add)
                 await asyncio.wait(ent.add_finished for ent in to_add)
+                # Stop tracking entities the platform did not add, e.g.
+                # disabled ones, as they can't be removed later
+                not_added = [ent for ent in to_add if not ent.add_finished.result()]
+                for key, entity in list(self.current_entities.items()):
+                    if entity in not_added:
+                        self.current_entities.pop(key)
+                for power_key, power_entity in list(
+                    self.current_power_entities.items()
+                ):
+                    if power_entity in not_added:
+                        self.current_power_entities.pop(power_key)
 
             for key, entity in to_remove.items():
                 self.current_entities.pop(key)
@@ -362,10 +373,10 @@ def _unit_converter(unit: str) -> type[unit_conversion.BaseUnitConverter]:
     return unit_conversion.VolumeConverter
 
 
-def _set_result_unless_done(future: asyncio.Future[None]) -> None:
+def _set_result_unless_done(future: asyncio.Future[bool], result: bool) -> None:
     """Set the result of a future unless it is done."""
     if not future.done():
-        future.set_result(None)
+        future.set_result(result)
 
 
 @dataclass
@@ -441,12 +452,13 @@ class EnergyCostSensor(RestoreSensor):
         self._attr_state_class = SensorStateClass.TOTAL
         self._config = config
         self._last_energy_sensor_state: State | None = None
-        # SensorManager awaits add_finished; async_on_remove resolves it on the
-        # abort path too, since add_to_platform_abort fires on-remove callbacks.
-        self.add_finished: asyncio.Future[None] = (
+        # SensorManager awaits add_finished; async_on_remove resolves it with
+        # False on the abort path, since add_to_platform_abort fires on-remove
+        # callbacks.
+        self.add_finished: asyncio.Future[bool] = (
             asyncio.get_running_loop().create_future()
         )
-        self.async_on_remove(lambda: _set_result_unless_done(self.add_finished))
+        self.async_on_remove(lambda: _set_result_unless_done(self.add_finished, False))
 
     def _reset(self, energy_state: State) -> None:
         """Reset the cost sensor."""
@@ -689,7 +701,7 @@ class EnergyCostSensor(RestoreSensor):
                 self._async_state_changed_listener,
             )
         )
-        _set_result_unless_done(self.add_finished)
+        _set_result_unless_done(self.add_finished, True)
 
     @callback
     def _async_state_changed_listener(self, *_: Any) -> None:
@@ -816,12 +828,13 @@ class EnergyPowerSensor(SensorEntity):
                 config["stat_rate_to"],
             ]
 
-        # SensorManager awaits add_finished; async_on_remove resolves it on the
-        # abort path too, since add_to_platform_abort fires on-remove callbacks.
-        self.add_finished: asyncio.Future[None] = (
+        # SensorManager awaits add_finished; async_on_remove resolves it with
+        # False on the abort path, since add_to_platform_abort fires on-remove
+        # callbacks.
+        self.add_finished: asyncio.Future[bool] = (
             asyncio.get_running_loop().create_future()
         )
-        self.async_on_remove(lambda: _set_result_unless_done(self.add_finished))
+        self.async_on_remove(lambda: _set_result_unless_done(self.add_finished, False))
 
     @property
     @override
@@ -972,7 +985,7 @@ class EnergyPowerSensor(SensorEntity):
                 self._async_state_changed_listener,
             )
         )
-        _set_result_unless_done(self.add_finished)
+        _set_result_unless_done(self.add_finished, True)
 
     @callback
     def _async_state_changed_listener(self, *_: Any) -> None:

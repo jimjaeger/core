@@ -2529,6 +2529,106 @@ async def test_energy_data_removal(
     assert state.state == "unavailable"
 
 
+async def test_disabled_cost_sensor_removal(
+    recorder_mock: Recorder,
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Test removing the config of a disabled cost sensor."""
+    entity_registry.async_get_or_create(
+        "sensor",
+        "energy",
+        "sensor.energy_consumption_grid_cost",
+        suggested_object_id="energy_consumption_cost",
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    energy_data = data.EnergyManager.default_preferences()
+    energy_data["energy_sources"].append(
+        {
+            "type": "grid",
+            "flow_from": [
+                {
+                    "stat_energy_from": "sensor.energy_consumption",
+                    "stat_cost": None,
+                    "entity_energy_price": None,
+                    "number_energy_price": 1,
+                }
+            ],
+            "flow_to": [],
+            "cost_adjustment_day": 0,
+        }
+    )
+    hass_storage[data.STORAGE_KEY] = {
+        "version": 1,
+        "data": energy_data,
+    }
+    hass.states.async_set(
+        "sensor.energy_consumption",
+        "100",
+        {
+            ATTR_UNIT_OF_MEASUREMENT: UnitOfEnergy.KILO_WATT_HOUR,
+            ATTR_STATE_CLASS: SensorStateClass.TOTAL_INCREASING,
+        },
+    )
+
+    assert await async_setup_component(hass, DOMAIN, {"energy": {}})
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.energy_consumption_cost") is None
+
+    manager = await async_get_manager(hass)
+    await manager.async_update({"energy_sources": []})
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.energy_consumption_cost") is None
+
+
+async def test_duplicate_cost_sensor_removal(
+    recorder_mock: Recorder,
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test removing the config when the same meter is used in two sources."""
+    grid_source = {
+        "type": "grid",
+        "flow_from": [
+            {
+                "stat_energy_from": "sensor.energy_consumption",
+                "stat_cost": None,
+                "entity_energy_price": None,
+                "number_energy_price": 1,
+            }
+        ],
+        "flow_to": [],
+        "cost_adjustment_day": 0,
+    }
+    energy_data = data.EnergyManager.default_preferences()
+    energy_data["energy_sources"].extend([grid_source, copy.deepcopy(grid_source)])
+    hass_storage[data.STORAGE_KEY] = {
+        "version": 1,
+        "data": energy_data,
+    }
+    hass.states.async_set(
+        "sensor.energy_consumption",
+        "100",
+        {
+            ATTR_UNIT_OF_MEASUREMENT: UnitOfEnergy.KILO_WATT_HOUR,
+            ATTR_STATE_CLASS: SensorStateClass.TOTAL_INCREASING,
+        },
+    )
+
+    assert await async_setup_component(hass, DOMAIN, {"energy": {}})
+    await hass.async_block_till_done()
+
+    assert "Platform energy does not generate unique IDs" in caplog.text
+
+    manager = await async_get_manager(hass)
+    await manager.async_update({"energy_sources": []})
+    await hass.async_block_till_done()
+
+
 async def test_stat_cost_already_configured(
     setup_integration, hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
@@ -3333,6 +3433,7 @@ async def test_add_finished_resolved_on_abort(
     sensor.add_to_platform_abort()
 
     assert sensor.add_finished.done()
+    assert sensor.add_finished.result() is False
 
 
 @pytest.mark.parametrize(
